@@ -1,0 +1,5 @@
+# Browser captures contain your password and session ids. Never commit them.
+*.har
+__pycache__/
+.pytest_cache/
+.venv/
