@@ -1,5 +1,6 @@
 """Shared fixtures."""
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -40,5 +41,14 @@ def mock_api():
             "custom_components.schluter_ditra_heat.api.SchluterApi.update_thermostat",
             AsyncMock(),
         ) as update,
+        patch(
+            "custom_components.schluter_ditra_heat.api.SchluterApi.wait_for_notification",
+            AsyncMock(side_effect=_no_news),
+        ) as notify,
     ):
-        yield {"login": login, "get": get, "update": update}
+        yield {"login": login, "get": get, "update": update, "notify": notify}
+
+
+async def _no_news():
+    """Stand-in for a long-poll that never returns."""
+    await asyncio.Event().wait()

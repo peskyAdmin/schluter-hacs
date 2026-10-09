@@ -10,6 +10,7 @@ are integers in hundredths of a degree Celsius.
 
 from __future__ import annotations
 
+import asyncio
 from html.parser import HTMLParser
 import json
 import logging
@@ -19,7 +20,7 @@ from urllib.parse import urljoin
 
 import aiohttp
 
-from .const import API_URL, APPLICATION_ID, BASE_URL
+from .const import API_URL, APPLICATION_ID, BASE_URL, NOTIFICATION_TIMEOUT
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -76,13 +77,17 @@ class SchluterApi:
         self._email = email
         self._password = password
         self._session_id: str | None = None
+        self._login_lock = asyncio.Lock()
 
     async def login(self) -> None:
         """Log in and store the resulting SessionId."""
         if session_id := await self._login_direct():
             self._session_id = session_id
-            return
-        await self._login_oidc()
+        else:
+            await self._login_oidc()
+        # The server only queues notifications for a session after it has
+        # listed the thermostats once, so prime every new session.
+        await self._request("GET", "thermostats", retry=False)
 
     async def _login_direct(self) -> str | None:
         """Try the legacy JSON login; return None if it is unavailable or refused."""
@@ -165,19 +170,28 @@ class SchluterApi:
     async def _request(
         self, method: str, path: str, params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None, retry: bool = True,
+        timeout: aiohttp.ClientTimeout | None = None,
     ) -> Any:
         if self._session_id is None:
-            await self.login()
-        query = {"sessionid": self._session_id, **(params or {})}
+            async with self._login_lock:
+                if self._session_id is None:
+                    await self.login()
+        session_id = self._session_id
+        query = {"sessionid": session_id, **(params or {})}
+        kwargs: dict[str, Any] = {"timeout": timeout} if timeout else {}
         async with self._session.request(
             method, f"{API_URL}/{path}", params=query, json=json_body,
-            allow_redirects=False,
+            allow_redirects=False, **kwargs,
         ) as resp:
             if resp.status in (401, 403) or 300 <= resp.status < 400:
                 if not retry:
                     raise SchluterAuthError(f"Session rejected ({resp.status})")
-                self._session_id = None
-                return await self._request(method, path, params, json_body, retry=False)
+                # Another call may already have logged in again.
+                if self._session_id == session_id:
+                    self._session_id = None
+                return await self._request(
+                    method, path, params, json_body, retry=False, timeout=timeout
+                )
             if resp.status >= 400:
                 raise SchluterError(f"{method} {path} failed with HTTP {resp.status}")
             return await resp.json(content_type=None)
@@ -200,3 +214,19 @@ class SchluterApi:
         )
         if not (result or {}).get("Success"):
             raise SchluterError(f"Thermostat {serial} rejected update: {result}")
+
+    async def wait_for_notification(self) -> dict[str, Any] | None:
+        """Long-poll for the next thermostat change on the account.
+
+        The server holds the request open until something changes, then
+        returns ``{"Action": n, "Thermostat": {...}}``. Action 2 is an update
+        and 3 a removal. With nothing to report it answers with an empty body
+        or a null thermostat after about a minute; this returns None then.
+        """
+        data = await self._request(
+            "GET", "notification", params={"sequencenr": 0},
+            timeout=aiohttp.ClientTimeout(total=NOTIFICATION_TIMEOUT),
+        )
+        if not isinstance(data, dict) or not data.get("Thermostat"):
+            return None
+        return data

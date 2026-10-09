@@ -1,12 +1,12 @@
 {
   "domain": "schluter_ditra_heat",
   "name": "Schluter DITRA-HEAT-E-WiFi",
-  "codeowners": [],
+  "codeowners": ["@peskyAdmin"],
   "config_flow": true,
-  "documentation": "https://github.com/OWNER/schluter-hacs",
+  "documentation": "https://github.com/peskyAdmin/schluter-hacs",
   "integration_type": "hub",
-  "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/OWNER/schluter-hacs/issues",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/peskyAdmin/schluter-hacs/issues",
   "requirements": [],
   "version": "0.1.0"
 }

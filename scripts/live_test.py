@@ -1,8 +1,10 @@
 """Read-only check of the Schluter API client against the real service.
 
-Usage:  pip install aiohttp && python scripts/live_test.py
+Usage:  pip install aiohttp && python scripts/live_test.py [--watch]
 Prompts for your Schluter email and password, logs in, and prints each
-thermostat's status. It never changes a setting.
+thermostat's status. With --watch it then stays connected and prints every
+push notification as it arrives (change the setpoint in the Schluter app to
+see one). It never changes a setting.
 """
 
 import asyncio
@@ -10,6 +12,7 @@ import getpass
 import importlib
 from pathlib import Path
 import sys
+import time
 import types
 
 import aiohttp
@@ -42,6 +45,22 @@ async def main() -> None:
                 f"  mode:        {MODES.get(t.get('RegulationMode'), t.get('RegulationMode'))}\n"
                 f"  error code:  {t.get('ErrorCode')}"
             )
+        if "--watch" in sys.argv:
+            print("\nWaiting for push notifications (Ctrl+C to stop)...")
+            while True:
+                try:
+                    note = await client.wait_for_notification()
+                except TimeoutError:
+                    continue
+                if note is None:
+                    print(time.strftime("%H:%M:%S"), "no change (long-poll renewed)")
+                    continue
+                t = note["Thermostat"]
+                print(
+                    time.strftime("%H:%M:%S"),
+                    f"action {note.get('Action')}: {t.get('Room')} online={t.get('Online')}"
+                    f" heating={t.get('Heating')} set point={t.get('SetPointTemp', 0) / 100:.1f} °C",
+                )
 
 
 asyncio.run(main())

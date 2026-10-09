@@ -14,7 +14,7 @@ Manual install: copy `custom_components/schluter_ditra_heat` into your Home Assi
 
 ## What you get
 
-One climate entity per thermostat on the account, polled every 60 seconds.
+One climate entity per thermostat on the account. Changes show up within a few seconds, whether they come from Home Assistant, the Schluter app or the thermostat itself.
 
 | Home Assistant | Thermostat |
 | --- | --- |
@@ -41,12 +41,14 @@ The integration does not edit the thermostat's built-in schedule. Pick one of tw
 ## Testing
 
 - `pytest` runs the Home Assistant tests (needs `pip install pytest-homeassistant-custom-component`).
-- `python scripts/live_test.py` signs in to the real Schluter service and prints each thermostat's status without changing anything (needs `pip install aiohttp`).
+- `python scripts/live_test.py` signs in to the real Schluter service and prints each thermostat's status without changing anything (needs `pip install aiohttp`). Add `--watch` to stay connected and print push notifications as they arrive.
 
 ## How it talks to Schluter
 
 - Login tries the legacy `POST /api/authenticate/user` first, then falls back to the website's OpenID Connect flow against `identity-schluter.mythermostat.info`. Either way the result is a `SessionId` used as `?sessionid=` on every API call. An expired session returns HTTP 401 and the integration signs in again.
 - `GET /api/thermostats` returns all thermostats (grouped). `POST /api/thermostat?serialnumber=…` changes one.
+- `GET /api/notification?sequencenr=0` is a long-poll: the server holds it open until a thermostat changes, then returns `{"Action": 2, "Thermostat": {...}}` (3 means removed). With nothing to report it answers after about a minute and the integration re-opens it. A new session only gets notifications after it has listed the thermostats once, so every login does that first.
+- A full fetch still runs every 15 minutes as a safety net, and every 60 seconds while the push connection is down.
 - Temperatures are integers in hundredths of a degree Celsius (`2000` = 20 °C).
 - `RegulationMode`: `1` schedule, `2` temporary hold until `ComfortEndTime`, `3` permanent hold at `ManualTemperature`, `4` vacation.
 

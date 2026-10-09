@@ -12,13 +12,11 @@ from homeassistant.components.climate import (
 )
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import SchluterConfigEntry
 from .const import (
-    DOMAIN,
     MODE_MANUAL,
     MODE_SCHEDULE,
     MODE_VACATION,
@@ -64,15 +62,7 @@ class SchluterThermostat(CoordinatorEntity[SchluterCoordinator], ClimateEntity):
         super().__init__(coordinator)
         self._serial = serial
         self._attr_unique_id = serial
-        data = self._data
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, serial)},
-            manufacturer="Schluter",
-            model="DITRA-HEAT-E-WiFi",
-            name=data.get("Room") or f"Schluter {serial}",
-            serial_number=serial,
-            sw_version=data.get("SWVersion"),
-        )
+        self._attr_device_info = coordinator.device_info(serial)
 
     @property
     def _data(self) -> dict[str, Any]:
@@ -133,12 +123,13 @@ class SchluterThermostat(CoordinatorEntity[SchluterCoordinator], ClimateEntity):
     async def _send(self, payload: dict[str, Any]) -> None:
         payload["VacationEnabled"] = self._vacation_flag()
         await self.coordinator.api.update_thermostat(self._serial, payload)
-        # Reflect the change right away; the next poll confirms it.
+        # Reflect the change right away; the push notification confirms it.
         self._data.update(payload)
         if payload.get("RegulationMode") == MODE_MANUAL:
             self._data["SetPointTemp"] = payload["ManualTemperature"]
         self.async_write_ha_state()
-        await self.coordinator.async_request_refresh()
+        if not self.coordinator.push_connected:
+            await self.coordinator.async_request_refresh()
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         if (temp := kwargs.get(ATTR_TEMPERATURE)) is None:

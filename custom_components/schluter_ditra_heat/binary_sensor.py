@@ -13,12 +13,10 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import SchluterConfigEntry
-from .const import DOMAIN
 from .coordinator import SchluterCoordinator
 
 
@@ -83,7 +81,7 @@ class SchluterBinarySensor(CoordinatorEntity[SchluterCoordinator], BinarySensorE
         self.entity_description = description
         self._serial = serial
         self._attr_unique_id = f"{serial}_{description.key}"
-        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, serial)})
+        self._attr_device_info = coordinator.device_info(serial)
 
     @property
     def _data(self) -> dict[str, Any]:
