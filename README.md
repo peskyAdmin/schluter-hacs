@@ -54,4 +54,6 @@ The integration does not edit the thermostat's built-in schedule. Pick one of tw
 
 ## Status
 
-Early scaffold built from browser captures of the web app; not yet tested against a live Home Assistant install.
+Version 1.0.0. Tested and working in a live Home Assistant install with a DITRA-HEAT-E-WiFi thermostat.
+
+This uses Schluter's unofficial cloud API, so a change on Schluter's side could break it. If it stops working, please [open an issue](https://github.com/peskyAdmin/schluter-hacs/issues).
