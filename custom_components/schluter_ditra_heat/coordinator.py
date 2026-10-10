@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 import aiohttp
@@ -20,6 +21,7 @@ from .const import (
     ACTION_UPDATED,
     DOMAIN,
     FALLBACK_POLL_INTERVAL,
+    PUSH_MIN_EMPTY_SECONDS,
     PUSH_RETRY_MAX,
     PUSH_RETRY_MIN,
     SAFETY_POLL_INTERVAL,
@@ -79,8 +81,11 @@ class SchluterCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
     async def _listen(self) -> None:
         delay = PUSH_RETRY_MIN
         while True:
+            started = time.monotonic()
             try:
                 notification = await self.api.wait_for_notification()
+                if notification:
+                    self._apply(notification)
             except TimeoutError:
                 # The server held the request longer than our timeout; just re-open.
                 continue
@@ -91,18 +96,26 @@ class SchluterCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
                 return
             except (SchluterError, aiohttp.ClientError, ValueError) as err:
                 _LOGGER.debug("Schluter push failed, retrying in %s s: %s", delay, err)
-                self._set_push_connected(False)
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, PUSH_RETRY_MAX)
+            except Exception:
+                # Never let an odd payload end push updates for good.
+                _LOGGER.exception("Unexpected error in Schluter push; retrying in %s s", delay)
+            else:
+                delay = PUSH_RETRY_MIN
+                self._set_push_connected(True)
+                if notification or time.monotonic() - started >= PUSH_MIN_EMPTY_SECONDS:
+                    continue
+                # An instant empty answer would otherwise become a tight loop.
+                await asyncio.sleep(PUSH_RETRY_MIN)
                 continue
-            delay = PUSH_RETRY_MIN
-            self._set_push_connected(True)
-            if notification:
-                self._apply(notification)
+            self._set_push_connected(False)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, PUSH_RETRY_MAX)
 
     def _apply(self, notification: dict[str, Any]) -> None:
         thermostat = notification["Thermostat"]
-        serial = str(thermostat.get("SerialNumber"))
+        if thermostat.get("SerialNumber") is None:
+            return
+        serial = str(thermostat["SerialNumber"])
         data = dict(self.data or {})
         action = notification.get("Action")
         if action == ACTION_UPDATED:

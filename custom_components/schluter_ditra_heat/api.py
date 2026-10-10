@@ -20,11 +20,38 @@ from urllib.parse import urljoin
 
 import aiohttp
 
-from .const import API_URL, APPLICATION_ID, BASE_URL, NOTIFICATION_TIMEOUT
+from .const import (
+    API_URL,
+    APPLICATION_ID,
+    BASE_URL,
+    MODE_COMFORT,
+    MODE_MANUAL,
+    MODE_VACATION,
+    NOTIFICATION_TIMEOUT,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 _SESSION_RE = re.compile(r"var\s+session_object\s*=\s*(\{.*?\});", re.S)
+
+
+def requested_temperature(thermostat: dict[str, Any]) -> int | None:
+    """Return the target the user asked for, in hundredths of a degree.
+
+    ``SetPointTemp`` is what the thermostat last reported, so it lags behind
+    a change until the thermostat confirms it and stays stale while it is
+    offline. Holds and vacation carry their own requested temperature; only
+    the schedule needs the thermostat's own value.
+    """
+    field = {
+        MODE_COMFORT: "ComfortTemperature",
+        MODE_MANUAL: "ManualTemperature",
+        MODE_VACATION: "VacationTemperature",
+    }.get(thermostat.get("RegulationMode"))
+    value = thermostat.get(field) if field else None
+    if value in (None, ""):
+        value = thermostat.get("SetPointTemp")
+    return None if value in (None, "") else int(value)
 
 
 class SchluterError(Exception):
@@ -185,7 +212,9 @@ class SchluterApi:
         ) as resp:
             if resp.status in (401, 403) or 300 <= resp.status < 400:
                 if not retry:
-                    raise SchluterAuthError(f"Session rejected ({resp.status})")
+                    # The login itself succeeded, so the password is fine;
+                    # treat this as a temporary failure, not a reauth.
+                    raise SchluterError(f"Session rejected ({resp.status})")
                 # Another call may already have logged in again.
                 if self._session_id == session_id:
                     self._session_id = None
@@ -227,6 +256,6 @@ class SchluterApi:
             "GET", "notification", params={"sequencenr": 0},
             timeout=aiohttp.ClientTimeout(total=NOTIFICATION_TIMEOUT),
         )
-        if not isinstance(data, dict) or not data.get("Thermostat"):
+        if not isinstance(data, dict) or not isinstance(data.get("Thermostat"), dict):
             return None
         return data

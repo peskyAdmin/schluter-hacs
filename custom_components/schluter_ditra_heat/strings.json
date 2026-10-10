@@ -39,5 +39,10 @@
         "name": "Error"
       }
     }
+  },
+  "exceptions": {
+    "update_failed": {
+      "message": "Couldn't update the thermostat: {error}"
+    }
   }
 }

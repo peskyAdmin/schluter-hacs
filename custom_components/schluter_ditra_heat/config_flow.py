@@ -30,7 +30,9 @@ class SchluterConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def _validate(self, email: str, password: str) -> str | None:
         """Try to log in; return an error key or None."""
-        session = async_create_clientsession(self.hass, cookie_jar=CookieJar())
+        session = async_create_clientsession(
+            self.hass, auto_cleanup=False, cookie_jar=CookieJar()
+        )
         api = SchluterApi(session, email, password)
         try:
             await api.login()
@@ -43,7 +45,8 @@ class SchluterConfigFlow(ConfigFlow, domain=DOMAIN):
             _LOGGER.exception("Unexpected error logging in to Schluter")
             return "unknown"
         finally:
-            await session.close()
+            # The connector is Home Assistant's shared one; release, don't close it.
+            session.detach()
         return None
 
     async def async_step_user(

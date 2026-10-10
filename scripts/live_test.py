@@ -23,6 +23,11 @@ _pkg.__path__ = [str(Path(__file__).resolve().parent.parent / "custom_components
 sys.modules["schluter_ditra_heat"] = _pkg
 api = importlib.import_module("schluter_ditra_heat.api")
 
+
+def _c(value) -> str:
+    return "?" if value is None else f"{value / 100:.1f} °C ({value / 100 * 9 / 5 + 32:.0f} °F)"
+
+
 MODES = {1: "schedule", 2: "temporary hold", 3: "permanent hold", 4: "vacation"}
 
 
@@ -41,7 +46,8 @@ async def main() -> None:
                 f"  online:      {t.get('Online')}\n"
                 f"  heating:     {t.get('Heating')}\n"
                 f"  floor temp:  {t.get('Temperature', 0) / 100:.1f} °C\n"
-                f"  set point:   {t.get('SetPointTemp', 0) / 100:.1f} °C\n"
+                f"  target:      {_c(api.requested_temperature(t))} (requested)\n"
+                f"  set point:   {_c(t.get('SetPointTemp'))} (last reported by the thermostat)\n"
                 f"  mode:        {MODES.get(t.get('RegulationMode'), t.get('RegulationMode'))}\n"
                 f"  error code:  {t.get('ErrorCode')}"
             )
@@ -59,7 +65,8 @@ async def main() -> None:
                 print(
                     time.strftime("%H:%M:%S"),
                     f"action {note.get('Action')}: {t.get('Room')} online={t.get('Online')}"
-                    f" heating={t.get('Heating')} set point={t.get('SetPointTemp', 0) / 100:.1f} °C",
+                    f" heating={t.get('Heating')} mode={MODES.get(t.get('RegulationMode'), t.get('RegulationMode'))}"
+                    f" target={_c(api.requested_temperature(t))} set point={_c(t.get('SetPointTemp'))}",
                 )
 
 

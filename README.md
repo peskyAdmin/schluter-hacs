@@ -23,7 +23,7 @@ One climate entity per thermostat on the account. Changes show up within a few s
 | **Off** | The web app's "away" setting (hold at 5 °C / 41 °F) |
 | Set temperature | Switches to a permanent hold at that temperature |
 
-The climate entity shows the floor temperature, the set point, and whether the floor is heating. It is marked unavailable while the thermostat is offline in the Schluter cloud.
+The climate entity shows the floor temperature, the target you asked for, and whether the floor is heating. The target comes from the active hold (or the schedule's set point in Auto), so a change shows right away even before the thermostat confirms it. It is marked unavailable while the thermostat is offline in the Schluter cloud.
 
 Each thermostat also gets binary sensors:
 

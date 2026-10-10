@@ -1,15 +1,19 @@
 """Config flow and entity tests."""
 
 import asyncio
+from unittest.mock import patch
+
+import pytest
 
 from homeassistant import config_entries
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.schluter_ditra_heat.api import SchluterAuthError
-from custom_components.schluter_ditra_heat.const import DOMAIN
+from custom_components.schluter_ditra_heat.api import SchluterApi, SchluterAuthError, SchluterError
+from custom_components.schluter_ditra_heat.const import API_URL, DOMAIN
 
 CREDS = {CONF_EMAIL: "me@example.com", CONF_PASSWORD: "pw"}
 
@@ -73,7 +77,7 @@ async def test_push_update(hass: HomeAssistant, mock_api) -> None:
     coordinator = hass.config_entries.async_entries(DOMAIN)[0].runtime_data
 
     await pushed.put(
-        {"Action": 2, "Thermostat": {"SerialNumber": "1254414", "SetPointTemp": 2400, "Heating": False}}
+        {"Action": 2, "Thermostat": {"SerialNumber": "1254414", "ManualTemperature": 2400, "Heating": False}}
     )
     await hass.async_block_till_done()
     state = hass.states.get("climate.kitchen_floor")
@@ -97,3 +101,70 @@ async def test_push_update(hass: HomeAssistant, mock_api) -> None:
     )
     await hass.async_block_till_done()
     assert mock_api["get"].await_count == calls
+
+
+async def test_target_follows_requested_temperature(hass: HomeAssistant, mock_api) -> None:
+    """While offline, SetPointTemp is stale; show what was asked for."""
+    pushed = asyncio.Queue()
+
+    async def next_notification():
+        return await pushed.get()
+
+    mock_api["notify"].side_effect = next_notification
+    await _setup(hass)
+    await pushed.put({"Action": 2, "Thermostat": {
+        "SerialNumber": "1254414", "RegulationMode": 2,
+        "ComfortTemperature": "3222", "SetPointTemp": 1888,
+    }})
+    await hass.async_block_till_done()
+    assert hass.states.get("climate.kitchen_floor").attributes["temperature"] == 32.2
+
+
+async def test_control_error(hass: HomeAssistant, mock_api) -> None:
+    await _setup(hass)
+    mock_api["update"].side_effect = SchluterError("boom")
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            "climate", "set_temperature",
+            {"entity_id": "climate.kitchen_floor", "temperature": 21}, blocking=True,
+        )
+
+
+async def test_push_survives_bad_payload_and_fast_empty(hass: HomeAssistant, mock_api) -> None:
+    """An odd payload doesn't end push, and instant empty answers are throttled."""
+    answers = [{"Action": 2, "Thermostat": "garbage"}, KeyError("odd")]
+    sleeps = []
+    done = asyncio.Event()
+
+    async def next_notification():
+        if answers:
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        if len(sleeps) < 3:
+            return None
+        done.set()
+        await asyncio.Event().wait()
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    mock_api["notify"].side_effect = next_notification
+    with patch("custom_components.schluter_ditra_heat.coordinator.asyncio.sleep", fake_sleep):
+        await _setup(hass)
+        await asyncio.wait_for(done.wait(), 5)
+    # One backoff for the exception, then a pause after each instant empty answer.
+    assert sleeps[0] == 5 and len(sleeps) >= 3
+
+
+async def test_rejected_after_login_is_not_auth_error(hass: HomeAssistant, aioclient_mock) -> None:
+    """A 401 straight after a successful login must not ask for the password."""
+    aioclient_mock.post(f"{API_URL}/authenticate/user", json={"SessionId": "s", "ErrorCode": 0})
+    aioclient_mock.get(f"{API_URL}/thermostats", status=401)
+    session = aioclient_mock.create_session(hass.loop)
+    api = SchluterApi(session, "me@example.com", "pw")
+    with pytest.raises(SchluterError) as err:
+        await api.get_thermostats()
+    await session.close()
+    assert not isinstance(err.value, SchluterAuthError)

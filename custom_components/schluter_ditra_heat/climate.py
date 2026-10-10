@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import aiohttp
+
 from homeassistant.components.climate import (
     ClimateEntity,
     ClimateEntityFeature,
@@ -12,17 +14,23 @@ from homeassistant.components.climate import (
 )
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import SchluterConfigEntry
+from .api import SchluterError, requested_temperature
 from .const import (
+    DOMAIN,
     MODE_MANUAL,
     MODE_SCHEDULE,
     MODE_VACATION,
     OFF_TEMPERATURE,
 )
 from .coordinator import SchluterCoordinator
+
+# The cloud handles one change at a time; don't race it.
+PARALLEL_UPDATES = 1
 
 
 def _to_c(value: int | None) -> float | None:
@@ -78,7 +86,7 @@ class SchluterThermostat(CoordinatorEntity[SchluterCoordinator], ClimateEntity):
 
     @property
     def target_temperature(self) -> float | None:
-        return _to_c(self._data.get("SetPointTemp"))
+        return _to_c(requested_temperature(self._data))
 
     @property
     def min_temp(self) -> float:
@@ -122,12 +130,18 @@ class SchluterThermostat(CoordinatorEntity[SchluterCoordinator], ClimateEntity):
 
     async def _send(self, payload: dict[str, Any]) -> None:
         payload["VacationEnabled"] = self._vacation_flag()
-        await self.coordinator.api.update_thermostat(self._serial, payload)
+        try:
+            await self.coordinator.api.update_thermostat(self._serial, payload)
+        except (SchluterError, aiohttp.ClientError, TimeoutError) as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="update_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
         # Reflect the change right away; the push notification confirms it.
-        self._data.update(payload)
-        if payload.get("RegulationMode") == MODE_MANUAL:
-            self._data["SetPointTemp"] = payload["ManualTemperature"]
-        self.async_write_ha_state()
+        data = dict(self.coordinator.data)
+        data[self._serial] = {**self._data, **payload}
+        self.coordinator.async_set_updated_data(data)
         if not self.coordinator.push_connected:
             await self.coordinator.async_request_refresh()
 
@@ -146,7 +160,7 @@ class SchluterThermostat(CoordinatorEntity[SchluterCoordinator], ClimateEntity):
                 {"RegulationMode": MODE_MANUAL, "ManualTemperature": OFF_TEMPERATURE}
             )
         else:
-            temp = self._data.get("SetPointTemp") or self._data.get("ManualTemperature")
+            temp = requested_temperature(self._data)
             if not temp or temp <= OFF_TEMPERATURE:
                 temp = self._data.get("ComfortTemperature", 2000)
             await self._send({"RegulationMode": MODE_MANUAL, "ManualTemperature": temp})

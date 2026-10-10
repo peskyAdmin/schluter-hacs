@@ -19,6 +19,9 @@ FALLBACK_POLL_INTERVAL = timedelta(seconds=60)
 NOTIFICATION_TIMEOUT = 90
 PUSH_RETRY_MIN = 5
 PUSH_RETRY_MAX = 300
+# An empty long-poll answer faster than this means the server is not holding
+# the request, so wait before re-opening instead of looping.
+PUSH_MIN_EMPTY_SECONDS = 10
 
 ACTION_UPDATED = 2
 ACTION_REMOVED = 3

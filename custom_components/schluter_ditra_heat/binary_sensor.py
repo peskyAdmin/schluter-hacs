@@ -19,6 +19,8 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from . import SchluterConfigEntry
 from .coordinator import SchluterCoordinator
 
+PARALLEL_UPDATES = 0
+
 
 @dataclass(frozen=True, kw_only=True)
 class SchluterBinarySensorDescription(BinarySensorEntityDescription):
