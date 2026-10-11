@@ -139,6 +139,7 @@ class LocalTransport:
 
     @callback
     def _on_state(self, serial: str, fields: dict[str, Any]) -> None:
+        _LOGGER.debug("Schluter %s update for Home Assistant: %s", serial, fields)
         if fields.get("Online"):
             ir.async_delete_issue(self.hass, DOMAIN, issue_id(self._entry_id))
         live = self._live.setdefault(serial, {})
@@ -166,6 +167,9 @@ class LocalTransport:
     async def update_thermostat(self, serial: str, payload: dict[str, Any]) -> None:
         if self._gateway is None:
             raise SchluterError("Local gateway is not running")
+        # Both local modes send changes straight to the thermostat, so they work
+        # whether or not OJ's cloud is reachable.
+        _LOGGER.debug("Schluter change from Home Assistant for %s: %s", serial, payload)
         mode = payload.get("RegulationMode")
         if mode is None:
             mode = (

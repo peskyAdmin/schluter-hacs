@@ -37,6 +37,9 @@ async def async_get_config_entry_diagnostics(
             "mode": api.mode,
             "gateway_running": gateway is not None,
             "thermostats_connected": len(gateway.connected_serials) if gateway else 0,
+            "thermostats_relayed": (
+                sum(map(gateway.is_relayed, gateway.connected_serials)) if gateway else 0
+            ),
         }
     return {
         "entry": async_redact_data(dict(entry.data), TO_REDACT),

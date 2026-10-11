@@ -65,8 +65,9 @@ UPSTREAM_GATEWAY_IP = "52.165.43.242"
 # gateway this long after it starts (almost always a missing DNS record).
 LOCAL_CONNECT_GRACE = 600
 
-# Device wire protocol. The setpoint field (f9.f4.1) is Celsius x200, while the
-# cloud API and this integration's coordinator use Celsius x100.
+# Device wire protocol. Setpoints (f9.f4.1 for a temporary hold, f9.f5.1 for a
+# permanent one) are Celsius x200, while the cloud API and this integration's
+# coordinator use Celsius x100.
 DEVICE_TEMP_SCALE = 200
 # Device timestamps are unix seconds minus this (2000-01-01).
 EPOCH_2000 = 946684800

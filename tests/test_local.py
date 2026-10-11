@@ -99,7 +99,12 @@ async def test_local_setup_and_control(
 
     diag = await async_get_config_entry_diagnostics(hass, entry)
     assert diag["connection_mode"] == "relay"
-    assert diag["local"] == {"mode": "relay", "gateway_running": True, "thermostats_connected": 0}
+    assert diag["local"] == {
+        "mode": "relay",
+        "gateway_running": True,
+        "thermostats_connected": 0,
+        "thermostats_relayed": 0,
+    }
     assert diag["entry"]["email"] == "**REDACTED**"
     assert diag["thermostats"][0]["SerialNumber"] == "**REDACTED**"
 
@@ -231,3 +236,44 @@ async def test_update_without_mode_keeps_current(
     transport._live.clear()
     await transport.update_thermostat(SERIAL, {"SetPointTemp": 1500})
     gateway["queue_set"].assert_awaited_with(SERIAL, 3, 3000)
+
+
+@pytest.fixture
+def cloud_update():
+    with patch(
+        "custom_components.schluter_ditra_heat.api.SchluterApi.update_thermostat",
+        AsyncMock(),
+    ) as update:
+        yield update
+
+
+async def test_relay_sends_changes_straight_to_the_thermostat(
+    hass: HomeAssistant, mock_api, gateway, cloud_update
+) -> None:
+    entry = await _setup(hass)
+    transport = _transport(entry)
+    transport._on_state(SERIAL, {"Online": True})
+    await hass.async_block_till_done()
+    target = {"entity_id": "climate.kitchen_floor"}
+    # Even while the thermostat's link reaches OJ's cloud, changes go to it locally.
+    with patch.object(transport.gateway, "is_relayed", return_value=True):
+        await hass.services.async_call(
+            "climate", "set_temperature", {**target, "temperature": 22.5}, blocking=True
+        )
+        gateway["queue_set"].assert_awaited_once_with(SERIAL, 3, 4500)
+        assert hass.states.get("climate.kitchen_floor").attributes["temperature"] == 22.5
+        await hass.services.async_call(
+            "climate", "set_hvac_mode", {**target, "hvac_mode": "auto"}, blocking=True
+        )
+        gateway["queue_set"].assert_awaited_with(SERIAL, 1, None)
+    cloud_update.assert_not_awaited()
+
+
+async def test_local_only_never_uses_the_cloud_for_changes(
+    hass: HomeAssistant, mock_api, gateway, cloud_update
+) -> None:
+    entry = await _setup(hass, mode="local")
+    transport = _transport(entry)
+    await transport.update_thermostat(SERIAL, {"RegulationMode": 3, "ManualTemperature": 2000})
+    cloud_update.assert_not_awaited()
+    gateway["queue_set"].assert_awaited_once_with(SERIAL, 3, 4000)
