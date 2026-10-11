@@ -92,6 +92,15 @@
     }
   },
   "exceptions": {
+    "auth_failed": {
+      "message": "Schluter rejected the saved login: {error}"
+    },
+    "cannot_connect": {
+      "message": "Error talking to Schluter: {error}"
+    },
+    "gateway_port_in_use": {
+      "message": "Could not start the local gateway on port {port}; is something else using it? ({error})"
+    },
     "update_failed": {
       "message": "Couldn't update the thermostat: {error}"
     }

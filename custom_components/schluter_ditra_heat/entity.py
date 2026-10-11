@@ -39,6 +39,7 @@ def add_thermostat_entities(
     gateway after startup, gets its entities without a restart.
     """
     known: set[str] = set()
+    coordinator.entity_serials.append(known)
 
     @callback
     def _add_new() -> None:

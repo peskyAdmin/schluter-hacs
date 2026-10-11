@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
 from .api import SchluterApi
@@ -46,8 +47,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: SchluterConfigEntry) -> 
         except OSError as err:
             await api.async_stop()
             raise ConfigEntryNotReady(
-                f"Could not start the local gateway on port {GATEWAY_PORT}; is "
-                f"something else using it? ({err})"
+                translation_domain=DOMAIN,
+                translation_key="gateway_port_in_use",
+                translation_placeholders={"port": str(GATEWAY_PORT), "error": str(err)},
             ) from err
         _LOGGER.info("Schluter is using local control (%s mode)", mode)
 
@@ -68,6 +70,20 @@ async def async_unload_entry(hass: HomeAssistant, entry: SchluterConfigEntry) ->
         if isinstance(api, LocalTransport):
             await api.async_stop()
     return unloaded
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: SchluterConfigEntry, device: dr.DeviceEntry
+) -> bool:
+    """Let the user delete a thermostat that is no longer on the account."""
+    coordinator = entry.runtime_data
+    serials = {key for domain, key in device.identifiers if domain == DOMAIN}
+    if serials & coordinator.data.keys():
+        return False
+    # Forget it, so it gets fresh entities if it's ever added back.
+    for known in coordinator.entity_serials:
+        known.difference_update(serials)
+    return True
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: SchluterConfigEntry) -> None:

@@ -8,7 +8,7 @@ This is a community integration, not made or supported by Schluter. Home Assista
 
 - **Thermostat:** the Wi-Fi model, DITRA-HEAT-E-WiFi, registered on the North American Schluter service (the one at ditra-heat-e-wifi.schluter.com). Non-Wi-Fi DITRA-HEAT thermostats have no network connection and can't be supported. Thermostats registered on other regional services are untested.
 - **Account:** you need a Schluter account with the thermostat already added and online. This integration can't create an account, pair a thermostat or set up its Wi-Fi. Do that in the Schluter DITRA-HEAT app first, then check you can sign in on the website with the same email and password.
-- **Home Assistant:** 2024.11 or newer.
+- **Home Assistant:** 2024.12 or newer.
 
 ## Install
 
@@ -38,6 +38,51 @@ The climate entity shows the floor temperature, the target you set, and whether 
 There are no extra actions; use the standard climate actions (`climate.set_temperature`, `climate.set_hvac_mode`, `climate.turn_on`, `climate.turn_off`).
 
 **Schedules:** the integration doesn't edit the thermostat's built-in schedule. Either leave the thermostat in **Heat** and drive the temperature from Home Assistant automations, or use **Auto** and edit the schedule in the Schluter app. Auto keeps working if Home Assistant goes down.
+
+### How it stays up to date
+
+- **Cloud:** Home Assistant keeps a request open to Schluter's service, which answers as soon as a thermostat changes, so updates arrive within seconds. It also re-reads everything every 15 minutes as a safety net, or every minute while that open request keeps failing.
+- **Local modes:** the thermostat sends its state straight to Home Assistant whenever it changes, and its floor temperature and heating status once a minute. If it goes quiet for 3 minutes, Home Assistant marks it offline.
+
+Changes you make in Home Assistant are sent right away and show immediately; the thermostat's next update confirms them.
+
+### Ideas
+
+- Drop the floor to frost protection when everyone leaves, and go back to the schedule when someone comes home.
+- Warm a bathroom floor ahead of an early alarm without changing the schedule for other days.
+- Track how long the floor heats each day with a **History stats** helper on the **Heating** sensor.
+- Get a notification when a thermostat drops off Wi-Fi or reports a fault.
+
+Two examples for `automations.yaml`; change `bathroom_floor` to match your thermostat's entity IDs:
+
+```yaml
+- alias: "Floor heat: away"
+  triggers:
+    - trigger: numeric_state
+      entity_id: zone.home
+      below: 1
+      for: "00:15:00"
+  actions:
+    - action: climate.set_hvac_mode
+      target:
+        entity_id: climate.bathroom_floor
+      data:
+        hvac_mode: "off"
+
+- alias: "Floor heat: home"
+  triggers:
+    - trigger: numeric_state
+      entity_id: zone.home
+      above: 0
+  actions:
+    - action: climate.set_hvac_mode
+      target:
+        entity_id: climate.bathroom_floor
+      data:
+        hvac_mode: auto
+```
+
+To get alerted instead, trigger on `binary_sensor.bathroom_floor_online` going to `off` for 15 minutes, or on `binary_sensor.bathroom_floor_error` going to `on`, and send a notification.
 
 ## Options
 
@@ -95,7 +140,9 @@ To go back to the cloud for good, switch to **Cloud** as described above.
 - This uses Schluter's unofficial cloud API and device protocol. A change on Schluter's side could break it.
 - Vacation mode and temporary holds started from the app or the thermostat show as **Heat** with the right target. You can't start vacation mode from Home Assistant.
 - Temperatures move in 0.5 °C steps. If Home Assistant uses Fahrenheit, it converts for you.
-- If you change your Schluter password, Home Assistant asks you to sign in again (a notice under Settings).
+- If you change your Schluter password, Home Assistant asks you to sign in again (a notice under Settings). To move to a different Schluter account, delete the integration and add it again.
+- Home Assistant doesn't discover the thermostat on your network; add it from **Add integration**.
+- If a thermostat leaves your Schluter account, its device stays in Home Assistant as unavailable. Delete it from the device page (**⋮ → Delete**). Home Assistant only allows this once the thermostat is no longer on the account.
 - In **Cloud** mode, the thermostat shows as unavailable in Home Assistant while it or Schluter's service is offline.
 
 **Local modes**
@@ -124,7 +171,7 @@ To go back to the cloud for good, switch to **Cloud** as described above.
 
 ## Development
 
-- `pytest` runs the tests (`pip install pytest-homeassistant-custom-component`). CI also runs hassfest and the HACS check, and requires 95% test coverage.
+- `pytest` runs the tests (`pip install pytest-homeassistant-custom-component`). CI also runs hassfest, the HACS check and `mypy` in strict mode (`pip install mypy`), and requires 95% test coverage.
 - `python scripts/live_test.py` signs in to the real Schluter service and prints each thermostat's status without changing anything (`pip install aiohttp`). Add `--watch` to print push notifications as they arrive.
 - Cloud API: login uses `POST /api/authenticate/user`, falling back to the website's OpenID Connect flow, and yields a `SessionId` passed as `?sessionid=`. `GET /api/thermostats` lists thermostats; `POST /api/thermostat?serialnumber=…` changes one. `GET /api/notification?sequencenr=0` is a long-poll that returns when a thermostat changes. A full fetch runs every 15 minutes as a safety net, or every 60 seconds while push is down.
 - Units: the cloud uses hundredths of a degree Celsius (`2000` = 20 °C). On the device protocol, the setpoint field is in two-hundredths; the integration converts between them. `RegulationMode` is `1` schedule, `2` temporary hold, `3` permanent hold, `4` vacation.
@@ -133,3 +180,5 @@ To go back to the cloud for good, switch to **Cloud** as described above.
 ## Status
 
 Version 1.1.0. Cloud mode is tested and in daily use with a DITRA-HEAT-E-WiFi thermostat. Local relay and local only are new in 1.1.0.
+
+Checked against Home Assistant's [integration quality scale](https://developers.home-assistant.io/docs/core/integration-quality-scale/): it follows every Silver rule, every Gold rule except network discovery, and the Platinum rules. Home Assistant only grades integrations built into Home Assistant, so this is a self-assessment.

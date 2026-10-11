@@ -31,6 +31,7 @@ import logging
 import ssl
 import time
 from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from .const import (
     DEVICE_TEMP_SCALE,
@@ -44,7 +45,14 @@ from .const import (
     UPSTREAM_GATEWAY_IP,
 )
 
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
+
 _LOGGER = logging.getLogger(__name__)
+
+# A decoded protobuf message: field number -> values, each an int (varint) or
+# bytes (length-delimited, or a raw fixed-width field).
+type Fields = dict[int, list[Any]]
 
 # The thermostat sends a telemetry heartbeat every minute. If nothing arrives for
 # three of them the link is dead (power cut, Wi-Fi drop), so close it and mark
@@ -98,14 +106,15 @@ def wvarint(v: int) -> bytes:
             return bytes(out)
 
 
-def parse(b: bytes) -> dict[int, list]:
+def parse(b: bytes) -> Fields:
     """field number -> list of values (int for varint, bytes for length-delimited)."""
     i = 0
-    out: dict[int, list] = {}
+    out: Fields = {}
     while i < len(b):
         tag_val, i = uvarint(b, i)
         field = tag_val >> 3
         wire = tag_val & 7
+        value: int | bytes
         if wire == 0:
             value, i = uvarint(b, i)
         elif wire == 2:
@@ -150,7 +159,7 @@ def _ack(seq: int) -> bytes:
     return _frame(_tag(1, 0) + wvarint(seq) + _tag(3, 0) + wvarint(1))
 
 
-def _login_serial(top: dict[int, list]) -> str | None:
+def _login_serial(top: Fields) -> str | None:
     if 6 not in top:
         return None
     f6 = parse(top[6][0])
@@ -158,10 +167,10 @@ def _login_serial(top: dict[int, list]) -> str | None:
     return value.decode(errors="replace") if isinstance(value, bytes) else str(value)
 
 
-def _decode_state(body: bytes) -> dict:
+def _decode_state(body: bytes) -> dict[str, Any]:
     """Pull mode/setpoint/room out of a state upload into cloud field names."""
     top = parse(body)
-    fields: dict = {}
+    fields: dict[str, Any] = {}
     if 9 in top:
         st = parse(top[9][0])
         if 2 in st:
@@ -171,7 +180,8 @@ def _decode_state(body: bytes) -> dict:
             if 1 in s4:
                 x100 = round(s4[1][0] / DEVICE_TEMP_SCALE * 100)
                 fields["SetPointTemp"] = x100
-                key = _MODE_TEMP_FIELD.get(fields.get("RegulationMode"))
+                mode = fields.get("RegulationMode")
+                key = _MODE_TEMP_FIELD.get(mode) if mode is not None else None
                 if key:
                     fields[key] = x100
     if 7 in top:
@@ -181,7 +191,7 @@ def _decode_state(body: bytes) -> dict:
     return fields
 
 
-def _decode_telemetry(f15: bytes) -> dict:
+def _decode_telemetry(f15: bytes) -> dict[str, Any]:
     """Pull current temperature and the live heating flag from a telemetry frame.
 
     Field 1 is the current floor temperature (Celsius x100, same scale the cloud
@@ -189,7 +199,7 @@ def _decode_telemetry(f15: bytes) -> dict:
     tracks the relay exactly, confirmed against a heat/stop capture.
     """
     tele = parse(f15)
-    fields: dict = {}
+    fields: dict[str, Any] = {}
     if 1 in tele:
         fields["Temperature"] = tele[1][0]
     if 2 in tele:
@@ -212,7 +222,7 @@ class LocalGateway:
         keyfile: str,
         *,
         relay: bool,
-        on_state: Callable[[str, dict], None],
+        on_state: Callable[[str, dict[str, Any]], None],
         port: int = GATEWAY_PORT,
     ) -> None:
         self._certfile = certfile
@@ -259,7 +269,7 @@ class LocalGateway:
                 pass
             self._client_ctx = client_ctx
 
-    async def start(self, hass) -> None:
+    async def start(self, hass: HomeAssistant) -> None:
         await hass.async_add_executor_job(self._build_contexts)
         self._server = await asyncio.start_server(
             self._handle, "0.0.0.0", self._port, ssl=self._server_ctx
@@ -368,7 +378,7 @@ class LocalGateway:
         self._desired.pop(serial, None)
         _LOGGER.debug("Schluter sent set-command to %s (mode %s)", serial, mode)
 
-    def _capture(self, serial: str, top: dict[int, list]) -> None:
+    def _capture(self, serial: str, top: Fields) -> None:
         if 8 in top:
             self._sched[serial] = top[8][0]
         if 9 in top:
@@ -385,7 +395,7 @@ class LocalGateway:
         _LOGGER.info("Schluter thermostat %s connected to the local gateway", serial)
         self.on_state(serial, {"Online": True})
 
-    def _dispatch(self, serial: str | None, body: bytes, top: dict[int, list]) -> None:
+    def _dispatch(self, serial: str | None, body: bytes, top: Fields) -> None:
         """Feed a frame that describes the thermostat to Home Assistant.
 
         State arrives three ways, all carrying field 9 (and often 7/8): the full
@@ -541,8 +551,8 @@ class LocalGateway:
                 task.cancel()
             up_writer.close()
         for task in done:
-            if (err := task.exception()) is not None and not isinstance(
-                err, (asyncio.IncompleteReadError, ConnectionError)
+            if (exc := task.exception()) is not None and not isinstance(
+                exc, (asyncio.IncompleteReadError, ConnectionError)
             ):
-                raise err
+                raise exc
         return True

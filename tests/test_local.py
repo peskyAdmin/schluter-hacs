@@ -183,6 +183,8 @@ async def test_port_in_use_retries(hass: HomeAssistant, mock_api, gateway) -> No
     gateway["start"].side_effect = OSError(98, "Address in use")
     entry = await _setup(hass)
     assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert entry.error_reason_translation_key == "gateway_port_in_use"
+    assert entry.error_reason_translation_placeholders["port"] == "9533"
 
 
 async def test_remove_deletes_saved_files(

@@ -15,6 +15,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.schluter_ditra_heat.api import SchluterApi, SchluterAuthError, SchluterError
 from custom_components.schluter_ditra_heat.const import API_URL, DOMAIN
 
+from .conftest import THERMOSTAT
+
 CREDS = {CONF_EMAIL: "me@example.com", CONF_PASSWORD: "pw"}
 
 
@@ -185,7 +187,24 @@ async def test_setup_errors(hass: HomeAssistant, mock_api) -> None:
     await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert entry.error_reason_translation_key == "auth_failed"
     assert any(flow["context"]["source"] == "reauth" for flow in hass.config_entries.flow.async_progress())
+
+
+@pytest.mark.parametrize(
+    ("error", "detail"), [(SchluterError("down"), "down"), (TimeoutError(), "TimeoutError")]
+)
+async def test_refresh_error_is_translated(
+    hass: HomeAssistant, mock_api, error, detail
+) -> None:
+    await _setup(hass)
+    coordinator = hass.config_entries.async_entries(DOMAIN)[0].runtime_data
+    mock_api["get"].side_effect = error
+    await coordinator.async_refresh()
+    assert not coordinator.last_update_success
+    assert coordinator.last_exception.translation_key == "cannot_connect"
+    assert coordinator.last_exception.translation_placeholders == {"error": detail}
+    assert hass.states.get("climate.kitchen_floor").state == "unavailable"
 
 
 async def test_push_auth_failure_starts_reauth(hass: HomeAssistant, mock_api) -> None:
@@ -287,3 +306,50 @@ async def test_hvac_modes(hass: HomeAssistant, mock_api) -> None:
     await entity.async_set_temperature()
     assert mock_api["update"].await_count == calls
     assert entity.extra_state_attributes["error_code"] == 0
+
+
+async def test_delete_device_only_once_off_the_account(
+    hass: HomeAssistant, mock_api, hass_ws_client
+) -> None:
+    from homeassistant.helpers import device_registry as dr, entity_registry as er
+    from homeassistant.setup import async_setup_component
+
+    pushed = asyncio.Queue()
+
+    async def next_notification():
+        return await pushed.get()
+
+    mock_api["notify"].side_effect = next_notification
+    await _setup(hass)
+    assert await async_setup_component(hass, "config", {})
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, "1254414")})
+    client = await hass_ws_client(hass)
+
+    async def delete() -> bool:
+        await client.send_json_auto_id(
+            {
+                "type": "config/device_registry/remove_config_entry",
+                "config_entry_id": entry.entry_id,
+                "device_id": device.id,
+            }
+        )
+        return (await client.receive_json())["success"]
+
+    # Still on the account: refused.
+    assert not await delete()
+    assert dr.async_get(hass).async_get(device.id) is not None
+
+    # Removed from the account: the device and its entities can go.
+    await pushed.put({"Action": 3, "Thermostat": {"SerialNumber": "1254414"}})
+    await hass.async_block_till_done()
+    assert await delete()
+    await hass.async_block_till_done()
+    assert dr.async_get(hass).async_get(device.id) is None
+    assert er.async_get(hass).async_get("climate.kitchen_floor") is None
+
+    # Added back later: it gets fresh entities without a restart.
+    await pushed.put({"Action": 2, "Thermostat": dict(THERMOSTAT)})
+    await hass.async_block_till_done()
+    assert hass.states.get("climate.kitchen_floor").state == "heat"
+    assert hass.states.get("binary_sensor.kitchen_floor_online").state == "on"

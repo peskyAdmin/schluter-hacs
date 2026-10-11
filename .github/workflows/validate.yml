@@ -28,5 +28,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install pytest-homeassistant-custom-component
+      - run: pip install pytest-homeassistant-custom-component mypy==2.4.0
+      - run: mypy
       - run: pytest -q --cov=custom_components.schluter_ditra_heat --cov-report=term-missing --cov-fail-under=95
