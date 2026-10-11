@@ -3,28 +3,79 @@
     "step": {
       "user": {
         "title": "Schluter DITRA-HEAT-E-WiFi",
-        "description": "Sign in with the account you use at ditra-heat-e-wifi.schluter.com.",
+        "description": "Sign in with the Schluter account your thermostat is already registered to. If you haven't set the thermostat up yet, do that first in the Schluter DITRA-HEAT app.",
         "data": {
           "email": "Email",
           "password": "Password"
+        },
+        "data_description": {
+          "email": "The email you use to sign in to the Schluter DITRA-HEAT app or ditra-heat-e-wifi.schluter.com.",
+          "password": "The password for that Schluter account."
         }
       },
       "reauth_confirm": {
         "title": "Sign in again",
-        "description": "Enter the current password for {email}.",
+        "description": "Schluter rejected the saved password for {email}. Enter the current one.",
         "data": {
           "password": "Password"
+        },
+        "data_description": {
+          "password": "The current password for your Schluter account."
         }
       }
     },
     "error": {
       "invalid_auth": "Invalid email or password.",
-      "cannot_connect": "Could not reach the Schluter service.",
-      "unknown": "Unexpected error."
+      "cannot_connect": "Could not reach the Schluter service. Check your internet connection and try again.",
+      "unknown": "Unexpected error. Check the Home Assistant log for details."
     },
     "abort": {
       "already_configured": "This account is already configured.",
       "reauth_successful": "Re-authentication was successful."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Connection mode",
+        "description": "**Cloud** works out of the box and is right for almost everyone.\n\nThe two **local** modes are advanced. They keep Home Assistant in control of the thermostat when your internet is down, but **they only work after you add a DNS record on your router or DNS server** (Pi-hole, AdGuard Home, UniFi and others). If you aren't sure what that means, keep Cloud.\n\nYou can switch modes at any time; your devices, entities and history stay the same. When leaving a local mode for Cloud, delete the DNS record and power-cycle the thermostat. Guide: {docs_url}",
+        "data": {
+          "connection_mode": "Connection mode"
+        },
+        "data_description": {
+          "connection_mode": "Local relay keeps the Schluter app working. Local only takes the thermostat off the cloud completely, so the Schluter app shows it offline. Switching between the two local modes needs no DNS change."
+        }
+      },
+      "local": {
+        "title": "Required: add a DNS record",
+        "description": "Local control only works once your thermostat looks up **{hostname}** and gets this Home Assistant host's IP address. Add this record on your router or DNS server:\n\n**{hostname}  →  {ip}**\n\nAlso make sure:\n- this Home Assistant host has a fixed IP address,\n- the thermostat can reach it on TCP port {port}.\n\nAfter saving, power-cycle the thermostat so it picks up the new address; it reconnects within a few minutes. To undo, switch back to Cloud and delete the record. Step-by-step instructions: {docs_url}",
+        "data": {
+          "acknowledge": "I've added the DNS record"
+        },
+        "data_description": {
+          "acknowledge": "Without the record the thermostat keeps talking to the cloud and Home Assistant shows it as unavailable."
+        }
+      }
+    },
+    "error": {
+      "must_acknowledge": "Add the DNS record first, then tick the box.",
+      "dns_not_detected": "This Home Assistant host doesn't resolve the name to its own IP yet. If you just added the record, or Home Assistant uses a different DNS server than your thermostat, this can be fine: select Submit again to continue.",
+      "dns_still_local": "Your DNS record for local control is still in place, so in Cloud mode the thermostat would keep looking for Home Assistant and stay offline. Delete the record and power-cycle the thermostat. Select Submit again to switch now."
+    }
+  },
+  "selector": {
+    "connection_mode": {
+      "options": {
+        "cloud": "Cloud (recommended)",
+        "relay": "Local relay (advanced, needs a DNS record)",
+        "local": "Local only (advanced, needs a DNS record)"
+      }
+    }
+  },
+  "issues": {
+    "local_not_connected": {
+      "title": "Thermostat hasn't connected to Home Assistant",
+      "description": "Local control is on, but no thermostat has connected to Home Assistant's gateway. This almost always means the DNS record is missing or isn't reaching the thermostat.\n\nCheck that **{hostname}** resolves to **{ip}** on your network, that the thermostat can reach that IP on TCP port {port}, then power-cycle the thermostat. To go back to the cloud, open the integration's Configure menu and choose Cloud.\n\nThis message clears on its own when the thermostat connects."
     }
   },
   "entity": {

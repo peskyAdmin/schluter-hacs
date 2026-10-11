@@ -29,4 +29,4 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install pytest-homeassistant-custom-component
-      - run: pytest -q
+      - run: pytest -q --cov=custom_components.schluter_ditra_heat --cov-report=term-missing --cov-fail-under=95

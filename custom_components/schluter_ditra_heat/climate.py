@@ -16,7 +16,6 @@ from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import SchluterConfigEntry
 from .api import SchluterError, requested_temperature
@@ -28,6 +27,7 @@ from .const import (
     OFF_TEMPERATURE,
 )
 from .coordinator import SchluterCoordinator
+from .entity import SchluterEntity, add_thermostat_entities
 
 # The cloud handles one change at a time; don't race it.
 PARALLEL_UPDATES = 1
@@ -43,19 +43,20 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    async_add_entities(
-        SchluterThermostat(coordinator, serial) for serial in coordinator.data
+    add_thermostat_entities(
+        coordinator,
+        async_add_entities,
+        lambda serial: [SchluterThermostat(coordinator, serial)],
     )
 
 
-class SchluterThermostat(CoordinatorEntity[SchluterCoordinator], ClimateEntity):
+class SchluterThermostat(SchluterEntity, ClimateEntity):
     """A DITRA-HEAT-E-WiFi floor thermostat.
 
     AUTO follows the thermostat's schedule, HEAT holds a temperature
     permanently, and OFF uses the web app's away setting (hold at 5 °C).
     """
 
-    _attr_has_entity_name = True
     _attr_name = None
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_target_temperature_step = 0.5
@@ -67,14 +68,8 @@ class SchluterThermostat(CoordinatorEntity[SchluterCoordinator], ClimateEntity):
     )
 
     def __init__(self, coordinator: SchluterCoordinator, serial: str) -> None:
-        super().__init__(coordinator)
-        self._serial = serial
+        super().__init__(coordinator, serial)
         self._attr_unique_id = serial
-        self._attr_device_info = coordinator.device_info(serial)
-
-    @property
-    def _data(self) -> dict[str, Any]:
-        return self.coordinator.data.get(self._serial, {})
 
     @property
     def available(self) -> bool:
