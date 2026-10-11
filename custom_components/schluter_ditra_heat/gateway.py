@@ -19,6 +19,8 @@ Two shapes:
   working in an outage; the next time the thermostat reconnects we try the cloud
   again.
 
+Both shapes send Home Assistant's changes straight to the thermostat.
+
 Nothing here is written to the device firmware, and no account or device data is
 baked into this module; the schedule and state templates used to build a command
 are captured live from the device at runtime.
@@ -27,6 +29,7 @@ are captured live from the device at runtime.
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 import logging
 import ssl
 import time
@@ -74,13 +77,18 @@ CONFIG = bytes.fromhex(
     "0a0804108014188c47200a0a0a080110941918a43f200a"
 )
 
-# Map the device state mode to the cloud field that carries its target, so the
-# coordinator's requested_temperature() picks it up unchanged.
-_MODE_TEMP_FIELD = {
-    MODE_SCHEDULE: "SetPointTemp",
-    MODE_COMFORT: "ComfortTemperature",
-    MODE_MANUAL: "ManualTemperature",
-    MODE_VACATION: "VacationTemperature",
+# The state (field 9) keeps each hold's setpoint (Celsius x200, in field 1) in a
+# sub-message of its own: 9.4 for a temporary hold, with the hold's end time in
+# 9.4.2, and 9.5 for a permanent hold. A command for a hold has to write that
+# hold's sub-message; the thermostat ignores the other one.
+_HOLD_FIELD = {MODE_COMFORT: 4, MODE_MANUAL: 5}
+# The cloud API field that carries the same setpoint.
+_HOLD_CLOUD_FIELD = {4: "ComfortTemperature", 5: "ManualTemperature"}
+_MODE_NAMES = {
+    MODE_SCHEDULE: "schedule",
+    MODE_COMFORT: "temporary hold",
+    MODE_MANUAL: "permanent hold",
+    MODE_VACATION: "vacation",
 }
 
 
@@ -142,6 +150,31 @@ def _tag(field: int, wire: int) -> bytes:
     return wvarint(field << 3 | wire)
 
 
+def _encode(field: int, value: int | bytes) -> bytes:
+    """Encode one field as a varint or a length-delimited value.
+
+    State messages only use those two wire types, so re-encoding a parsed one
+    gives back the same bytes.
+    """
+    if isinstance(value, int):
+        return _tag(field, 0) + wvarint(value)
+    return _tag(field, 2) + wvarint(len(value)) + value
+
+
+def _with_varint(msg: bytes, field: int, value: int) -> bytes:
+    """Return msg with varint field set to value and every other field kept."""
+    out = b""
+    replaced = False
+    for number, values in parse(msg).items():
+        for old in values:
+            if number == field and not replaced:
+                old, replaced = value, True
+            out += _encode(number, old)
+    if not replaced:
+        out += _encode(field, value)
+    return out
+
+
 def _server_time() -> int:
     return int(time.time()) - EPOCH_2000
 
@@ -167,27 +200,45 @@ def _login_serial(top: Fields) -> str | None:
     return value.decode(errors="replace") if isinstance(value, bytes) else str(value)
 
 
+def _x100(x200: int) -> int:
+    """Device setpoint (Celsius x200) to the cloud's Celsius x100."""
+    return round(x200 / DEVICE_TEMP_SCALE * 100)
+
+
+def _hold_setpoints(st: Fields) -> dict[int, int]:
+    """Each hold's stored setpoint (Celsius x200), keyed by its sub-message."""
+    out: dict[int, int] = {}
+    for sub in (4, 5):
+        raw = st.get(sub, [None])[0]
+        if isinstance(raw, bytes):
+            value = parse(raw).get(1, [None])[0]
+            if isinstance(value, int):
+                out[sub] = value
+    return out
+
+
 def _decode_state(body: bytes) -> dict[str, Any]:
-    """Pull mode/setpoint/room out of a state upload into cloud field names."""
+    """Pull mode/setpoints/room out of a state frame into cloud field names."""
     top = parse(body)
     fields: dict[str, Any] = {}
     if 9 in top:
         st = parse(top[9][0])
-        if 2 in st:
-            fields["RegulationMode"] = st[2][0]
-        if 4 in st:
-            s4 = parse(st[4][0])
-            if 1 in s4:
-                x100 = round(s4[1][0] / DEVICE_TEMP_SCALE * 100)
-                fields["SetPointTemp"] = x100
-                mode = fields.get("RegulationMode")
-                key = _MODE_TEMP_FIELD.get(mode) if mode is not None else None
-                if key:
-                    fields[key] = x100
+        mode = st.get(2, [None])[0]
+        if mode is not None:
+            fields["RegulationMode"] = mode
+        holds = _hold_setpoints(st)
+        for sub, x200 in holds.items():
+            fields[_HOLD_CLOUD_FIELD[sub]] = _x100(x200)
+        hold = _HOLD_FIELD.get(mode) if isinstance(mode, int) else None
+        if hold in holds:
+            fields["SetPointTemp"] = _x100(holds[hold])
     if 7 in top:
         di = parse(top[7][0])
         if 2 in di and isinstance(di[2][0], bytes):
             fields["Room"] = di[2][0].decode(errors="replace")
+        # 7.9 is the setpoint the thermostat is aiming for right now, in any mode.
+        if 9 in di and isinstance(di[9][0], int):
+            fields["SetPointTemp"] = _x100(di[9][0])
     return fields
 
 
@@ -206,6 +257,62 @@ def _decode_telemetry(f15: bytes) -> dict[str, Any]:
         fields["Heating"] = bool(tele[2][0])
     return fields
 
+
+def _temp(x200: int) -> str:
+    """Celsius x200 as readable Celsius and Fahrenheit, for debug logs."""
+    celsius = x200 / DEVICE_TEMP_SCALE
+    return f"{celsius:.2f}C/{celsius * 9 / 5 + 32:.1f}F"
+
+
+def _when(seconds: int) -> str:
+    """A device timestamp (seconds since 2000) as UTC, for debug logs."""
+    return datetime.fromtimestamp(seconds + EPOCH_2000, UTC).strftime("%Y-%m-%d %H:%M:%SZ")
+
+
+def _brief(value: int | bytes) -> str:
+    """A field we don't interpret, shown generically for debug logs."""
+    if isinstance(value, int):
+        return str(value)
+    return "{" + ", ".join(
+        f"{number}: {v if isinstance(v, int) else v.hex()}"
+        for number, values in parse(value).items()
+        for v in values
+    ) + "}"
+
+
+def _describe(top: Fields) -> str:
+    """One-line summary of a frame for debug logs; never includes the login."""
+    parts = [f"seq={top.get(1, [None])[0]}", "fields=" + ",".join(map(str, sorted(top)))]
+    if 2 in top:
+        parts.append(f"kind={top[2][0]}")
+    if 9 in top:
+        st = parse(top[9][0])
+        mode = st.get(2, [None])[0]
+        parts.append(f"mode={mode} ({_MODE_NAMES.get(mode, 'unknown')})")
+        holds = _hold_setpoints(st)
+        if 4 in holds:
+            parts.append(f"temporary={_temp(holds[4])}")
+            until = parse(st[4][0]).get(2, [None])[0]
+            if isinstance(until, int):
+                parts.append(f"until={_when(until)}")
+        if 5 in holds:
+            parts.append(f"permanent={_temp(holds[5])}")
+        parts.extend(
+            f"9.{number}={_brief(st[number][0])}"
+            for number in sorted(st)
+            if number not in (1, 2, 4, 5)
+        )
+    if 7 in top:
+        target = parse(top[7][0]).get(9, [None])[0]
+        if isinstance(target, int):
+            parts.append(f"target={_temp(target)}")
+    if 15 in top:
+        tele = parse(top[15][0])
+        if isinstance(floor := tele.get(1, [None])[0], int):
+            parts.append(f"floor={_temp(floor * 2)}")
+        if 2 in tele:
+            parts.append(f"heating={tele[2][0]}")
+    return " ".join(parts)
 
 
 class LocalGateway:
@@ -235,9 +342,11 @@ class LocalGateway:
         self._client_ctx: ssl.SSLContext | None = None
         self._conns: set[asyncio.StreamWriter] = set()  # every open device link
         self._writers: dict[str, asyncio.StreamWriter] = {}  # active link per serial
+        self._relayed: set[str] = set()  # serials whose active link reaches OJ's cloud
         self._sched: dict[str, bytes] = {}  # last schedule (f8) per serial
         self._state_raw: dict[str, bytes] = {}  # last state (f9) per serial
         self._desired: dict[str, tuple[int, int | None]] = {}  # pending set
+        self._unacked: dict[str, int] = {}  # seq of the last command sent per serial
         self._upstream_ok: bool | None = None  # relay only; None until first try
         self._seq = 100
 
@@ -245,6 +354,10 @@ class LocalGateway:
     def connected_serials(self) -> set[str]:
         """Serials of thermostats connected right now."""
         return set(self._writers)
+
+    def is_relayed(self, serial: str) -> bool:
+        """Whether the thermostat's current link is being relayed to OJ's cloud."""
+        return serial in self._relayed
 
     # --- lifecycle ----------------------------------------------------------
     def _build_contexts(self) -> None:
@@ -324,33 +437,33 @@ class LocalGateway:
         return self._seq
 
     def _build_set(self, serial: str, mode: int, setpoint_x200: int | None) -> bytes | None:
-        """Build a set-temperature frame from the device's own last upload."""
+        """Build a set-command body from the thermostat's own last state.
+
+        The command's state is a copy of that state with a fresh timestamp and
+        the new mode. A hold's setpoint goes into that hold's own sub-message
+        (9.4 temporary, 9.5 permanent); everything else, including the other
+        hold's setpoint and the temporary hold's end time, goes back exactly as
+        the thermostat sent it. Without a setpoint (back to the schedule) only
+        the mode changes.
+        """
         f9raw = self._state_raw.get(serial)
         if f9raw is None:
             return None  # no template captured yet; flushed after next upload
         st = parse(f9raw)
-        f3 = st[3][0] if 3 in st else b""
-        f5 = st[5][0] if 5 in st else b""
-        f6 = st.get(6, [0])[0]
-        f4 = parse(st[4][0]) if 4 in st else {}
-        until = f4.get(2, [0])[0]
-        setpoint = setpoint_x200 if setpoint_x200 is not None else f4.get(1, [0])[0]
-        f4b = _tag(1, 0) + wvarint(setpoint)
-        if until:
-            f4b += _tag(2, 0) + wvarint(until)
-        body9 = _tag(1, 0) + wvarint(_server_time()) + _tag(2, 0) + wvarint(mode)
-        if f3:
-            body9 += _tag(3, 2) + wvarint(len(f3)) + f3
-        body9 += _tag(4, 2) + wvarint(len(f4b)) + f4b
-        if f5:
-            body9 += _tag(5, 2) + wvarint(len(f5)) + f5
-        body9 += _tag(6, 0) + wvarint(f6)
-        f8 = self._sched.get(serial)
+        st[1] = [_server_time()]
+        st[2] = [mode]
+        hold = _HOLD_FIELD.get(mode)
+        if hold is not None and setpoint_x200 is not None:
+            current = st.get(hold, [b""])[0]
+            sub = current if isinstance(current, bytes) else b""
+            st[hold] = [_with_varint(sub, 1, setpoint_x200)]
+        body9 = b"".join(
+            _encode(number, value) for number in sorted(st) for value in st[number]
+        )
         body = _tag(1, 0) + wvarint(self._next_seq()) + _tag(5, 0) + wvarint(1)
-        if f8:
-            body += _tag(8, 2) + wvarint(len(f8)) + f8
-        body += _tag(9, 2) + wvarint(len(body9)) + body9
-        return _frame(body)
+        if f8 := self._sched.get(serial):
+            body += _encode(8, f8)
+        return body + _encode(9, body9)
 
     async def queue_set(self, serial: str, mode: int, setpoint_x200: int | None) -> None:
         """Ask the device to hold setpoint_x200 (Celsius x200) in mode.
@@ -359,24 +472,68 @@ class LocalGateway:
         to use as a template, the change is kept and sent as soon as it can be.
         """
         self._desired[serial] = (mode, setpoint_x200)
+        _LOGGER.debug(
+            "Schluter change queued for %s: mode %s (%s), setpoint %s",
+            serial,
+            mode,
+            _MODE_NAMES.get(mode, "unknown"),
+            "unchanged" if setpoint_x200 is None else _temp(setpoint_x200),
+        )
         await self._flush(serial)
 
     async def _flush(self, serial: str) -> None:
+        if serial not in self._desired:
+            return
         writer = self._writers.get(serial)
-        if serial not in self._desired or writer is None:
+        if writer is None:
+            _LOGGER.debug(
+                "Schluter thermostat %s isn't connected; the change will be sent "
+                "when it connects",
+                serial,
+            )
             return
         mode, setpoint = self._desired[serial]
-        frame = self._build_set(serial, mode, setpoint)
-        if frame is None:
+        body = self._build_set(serial, mode, setpoint)
+        if body is None:
+            _LOGGER.debug(
+                "Schluter has no state from %s to build the command from yet; the "
+                "change will be sent after its next state upload",
+                serial,
+            )
             return
+        top = parse(body)
+        self._log_frame("command", serial, top)
         try:
-            writer.write(frame)
+            writer.write(_frame(body))
             await writer.drain()
         except OSError as err:
             _LOGGER.debug("Schluter set-command to %s failed: %s", serial, err)
             return
         self._desired.pop(serial, None)
-        _LOGGER.debug("Schluter sent set-command to %s (mode %s)", serial, mode)
+        self._unacked[serial] = top[1][0]
+        _LOGGER.debug(
+            "Schluter sent set-command seq %s to %s (mode %s, setpoint %s)",
+            top[1][0],
+            serial,
+            mode,
+            "unchanged" if setpoint is None else _temp(setpoint),
+        )
+
+    def _note_ack(self, serial: str | None, top: Fields) -> None:
+        """Log when the thermostat acknowledges the command we last sent it."""
+        if (
+            serial
+            and 3 in top
+            and 2 not in top
+            and top.get(1, [None])[0] == self._unacked.get(serial)
+        ):
+            del self._unacked[serial]
+            _LOGGER.debug(
+                "Schluter thermostat %s acknowledged set-command seq %s (3=%s)",
+                serial,
+                top[1][0],
+                top[3][0],
+            )
 
     def _capture(self, serial: str, top: Fields) -> None:
         if 8 in top:
@@ -385,14 +542,24 @@ class LocalGateway:
             self._state_raw[serial] = top[9][0]
 
     # --- connection handling ------------------------------------------------
-    def _logged_in(self, serial: str | None, writer: asyncio.StreamWriter) -> None:
+    def _logged_in(
+        self, serial: str | None, writer: asyncio.StreamWriter, *, relayed: bool
+    ) -> None:
         if not serial:
             return
         old = self._writers.get(serial)
         self._writers[serial] = writer
+        if relayed:
+            self._relayed.add(serial)
+        else:
+            self._relayed.discard(serial)
         if old is not None and old is not writer:
             old.close()  # the device reconnected; drop the stale link
-        _LOGGER.info("Schluter thermostat %s connected to the local gateway", serial)
+        _LOGGER.info(
+            "Schluter thermostat %s connected to the local gateway (%s)",
+            serial,
+            "relayed to OJ's cloud" if relayed else "served locally",
+        )
         self.on_state(serial, {"Online": True})
 
     def _dispatch(self, serial: str | None, body: bytes, top: Fields) -> None:
@@ -438,6 +605,7 @@ class LocalGateway:
             # Only report offline if a newer connection hasn't replaced this one.
             if serial and self._writers.get(serial) is writer:
                 del self._writers[serial]
+                self._relayed.discard(serial)
                 _LOGGER.info(
                     "Schluter thermostat %s disconnected from the local gateway", serial
                 )
@@ -457,13 +625,14 @@ class LocalGateway:
         while True:
             body = await self._read_frame(reader, DEVICE_IDLE_TIMEOUT)
             top = parse(body)
+            self._log_frame("device", conn["serial"], top)
             seq = top.get(1, [0])[0]
             kind = top.get(2, [None])[0]
             if 6 in top:  # login
                 conn["serial"] = _login_serial(top)
                 writer.write(_login_ack(seq))
                 await writer.drain()
-                self._logged_in(conn["serial"], writer)
+                self._logged_in(conn["serial"], writer, relayed=False)
                 continue
             self._dispatch(conn["serial"], body, top)
             if kind == 6:  # schedule upload
@@ -473,6 +642,7 @@ class LocalGateway:
                 writer.write(_ack(seq))
                 writer.write(CONFIG)
             elif 3 in top and 2 not in top:  # the device acking us
+                self._note_ack(conn["serial"], top)
                 continue
             elif seq:  # telemetry and anything else that wants an ack
                 writer.write(_ack(seq))
@@ -481,6 +651,16 @@ class LocalGateway:
             await writer.drain()
             if 9 in top and conn["serial"]:
                 await self._flush(conn["serial"])
+
+    @staticmethod
+    def _log_frame(source: str, serial: str | None, top: Fields) -> None:
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "Schluter %s frame (%s): %s",
+                source,
+                serial or "before login",
+                "login" if 6 in top else _describe(top),
+            )
 
     def _note_upstream(self, ok: bool, err: Exception | None = None) -> None:
         """Log the relay's cloud link once per change, not once per attempt."""
@@ -522,12 +702,14 @@ class LocalGateway:
             while True:
                 body = await self._read_frame(reader, DEVICE_IDLE_TIMEOUT)
                 top = parse(body)
+                self._log_frame("device->cloud", conn["serial"], top)
                 up_writer.write(_frame(body))
                 await up_writer.drain()
                 if 6 in top:
                     conn["serial"] = _login_serial(top)
-                    self._logged_in(conn["serial"], writer)
+                    self._logged_in(conn["serial"], writer, relayed=True)
                 else:
+                    self._note_ack(conn["serial"], top)
                     self._dispatch(conn["serial"], body, top)
                     if 9 in top and conn["serial"]:
                         await self._flush(conn["serial"])
@@ -537,8 +719,10 @@ class LocalGateway:
                 body = await self._read_frame(up_reader)
                 writer.write(_frame(body))
                 await writer.drain()
+                top = parse(body)
+                self._log_frame("cloud->device", conn["serial"], top)
                 # App changes reach the thermostat as cloud commands; show them too.
-                self._dispatch(conn["serial"], body, parse(body))
+                self._dispatch(conn["serial"], body, top)
 
         tasks = [
             asyncio.create_task(device_to_cloud()),

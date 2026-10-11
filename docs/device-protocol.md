@@ -24,13 +24,21 @@ Maintainer notes on how the thermostat talks to OJ Electronics' device gateway, 
 
 - 9.1: timestamp, in seconds since 2000-01-01 UTC.
 - 9.2: regulation mode. 1 schedule, 2 temporary hold, 3 permanent hold, 4 vacation; these match the cloud API's `RegulationMode`.
-- 9.4.1: setpoint in °C × 200. The cloud API uses °C × 100, so the integration converts. 9.4.2 is the hold's end time.
-- 9.3, 9.5 and 9.6 aren't interpreted; commands copy them back unchanged.
-- Device info 7.2 is the room name. 7.9 mirrors the setpoint.
+- 9.4: the temporary hold. 9.4.1 is its setpoint in °C × 200 (the cloud API's `ComfortTemperature`, which uses °C × 100, so the integration converts). 9.4.2 is the hold's end time.
+- 9.5: the permanent hold. 9.5.1 is its setpoint in °C × 200 (the cloud API's `ManualTemperature`).
+- The thermostat keeps both setpoints all the time and uses the one for the current mode. In a captured permanent hold, 9.4.1 was 13.33 °C, 9.5.1 was 14.44 °C (58 °F), and device info 7.9 reported 14.44 °C as the setpoint.
+- 9.3 and 9.6 aren't interpreted. From the thermostat, 9.3 is `{1: 0}`; in the cloud's commands it carries more (two 7-byte values and a number that looks like a temperature), probably the vacation settings.
+- Device info 7.2 is the room name. 7.9 is the setpoint the thermostat is aiming for right now, in any mode, which is the only place the schedule's current setpoint appears.
 
 ## Commands to the thermostat
 
-A command has the same shape as a state change: field 1 sequence, 5 = 1, 8 the thermostat's own last schedule, and 9 a copy of its last state with the new mode and setpoint. In relay mode, changes made in the Schluter app reach the thermostat from the cloud in this same shape, so the gateway decodes those too.
+A command has the same shape as a state change: field 1 sequence, 5 = 1, 8 the thermostat's own last schedule, and 9 a copy of its last state with a fresh timestamp and the new mode. A hold's setpoint goes into that hold's own field: 9.5.1 for a permanent hold (what Home Assistant sets), 9.4.1 for a temporary one. Everything else, including the other hold's setpoint, goes back exactly as the thermostat sent it. Returning to the schedule changes only the mode. The thermostat acknowledges a command with its sequence number. The gateway's sequence numbers start at 101, so they're easy to tell apart from the cloud's.
+
+Writing a permanent hold's setpoint into 9.4.1 doesn't work: the thermostat switches to the permanent hold and uses the setpoint already in 9.5.1. Version 1.1.0 did this, so every change from Home Assistant landed on the stored permanent-hold temperature.
+
+In relay mode, changes made in the Schluter app reach the thermostat from the cloud in this same shape, so the gateway decodes those too. Home Assistant's own changes go straight to the thermostat in both local modes.
+
+With debug logging on, the gateway logs a one-line summary of every frame in each direction, and of each command it sends: sequence number, field numbers, mode, both hold setpoints in °C and °F, the temporary hold's end time, the current target, floor temperature and heating, and the raw value of any state field it doesn't interpret. Login frames are logged only as "login", so the account email never appears. It also logs each change Home Assistant asks for, why a change is waiting (the thermostat isn't connected, or hasn't sent its state yet), when the thermostat acknowledges a command, and the values handed to Home Assistant.
 
 ## Time
 

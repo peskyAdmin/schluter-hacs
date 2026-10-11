@@ -2,7 +2,7 @@
 
 Control Schluter DITRA-HEAT-E-WiFi floor-heating thermostats from Home Assistant. By default it uses the same Schluter cloud service as the DITRA-HEAT app and website. An optional, advanced local mode keeps Home Assistant in control when your internet is down.
 
-This is a community integration, not made or supported by Schluter. Home Assistant's built-in `schluter` integration targets an older Schluter service; this one has its own domain (`schluter_ditra_heat`), so both can be installed.
+This is a community integration, not made or supported by Schluter. Home Assistant's built-in `schluter` integration is an older, YAML-only integration for the same Schluter service that handles only temperature. This one has its own domain (`schluter_ditra_heat`), so both can be installed.
 
 ## Before you start
 
@@ -151,7 +151,7 @@ To go back to the cloud for good, switch to **Cloud** as described above.
 - The thermostat must be able to reach Home Assistant on TCP port 9533. If they're on different VLANs, allow that in your firewall.
 - Port 9533 must be free on the Home Assistant host. On a Docker install, use host networking or publish port 9533. Only one Schluter account per Home Assistant host can use local control.
 - After any DNS change, power-cycle the thermostat; it remembers the old address until then.
-- **Relay:** if the internet is down when the thermostat connects, Home Assistant serves it locally and keeps control. The Schluter app stays offline until the thermostat next reconnects, even after the internet returns; power-cycle it to bring the app back sooner. The same fallback happens if OJ ever moves their gateway, until this integration is updated.
+- **Relay:** changes made in Home Assistant go straight to the thermostat, as in Local only, so they work with or without the internet. The Schluter app may not show them until the thermostat next reports to Schluter's cloud. If the internet is down when the thermostat connects, Home Assistant serves it locally and keeps control. The Schluter app stays offline until the thermostat next reconnects, even after the internet returns; power-cycle it to bring the app back sooner. The same fallback happens if OJ ever moves their gateway, until this integration is updated.
 - **Local only:** the Schluter app and website show the thermostat as offline, and it won't receive firmware updates. When the internet is up, Home Assistant still reads room names and temperature limits from your Schluter account; the thermostat itself never contacts the cloud.
 - **Error sensor:** the local connection doesn't decode fault codes yet, so in local modes the Error sensor shows the last value the cloud reported. Floor temperature, target, mode, heating and online status are all read live from the thermostat.
 - A change sent while the thermostat is disconnected is applied when it reconnects.
@@ -161,7 +161,7 @@ To go back to the cloud for good, switch to **Cloud** as described above.
 
 - **"Invalid email or password":** check that the same email and password work on the Schluter website.
 - **Thermostat unavailable:** check its **Online** sensor and the Schluter app. In a local mode, see the repair notice and the checks above.
-- **Reporting a problem:** download diagnostics from **Settings → Devices & services → Schluter → ⋮ → Download diagnostics**. Your email, password, serial numbers and room names are removed. Attach the file to an [issue](https://github.com/peskyAdmin/schluter-hacs/issues). For more detail, turn on debug logging from the same menu, reproduce the problem, then turn it off to download the log.
+- **Reporting a problem:** download diagnostics from **Settings → Devices & services → Schluter → ⋮ → Download diagnostics**. Your email, password, serial numbers and room names are removed. Attach the file to an [issue](https://github.com/peskyAdmin/schluter-hacs/issues). For more detail, turn on debug logging from the same menu, reproduce the problem, then turn it off to download the log. In a local mode, the log shows every message between the thermostat, Home Assistant and Schluter's cloud, with the mode and setpoints decoded. It includes your thermostat's serial number and room name, but never your email or password.
 
 ## Remove
 
@@ -174,11 +174,11 @@ To go back to the cloud for good, switch to **Cloud** as described above.
 - `pytest` runs the tests (`pip install pytest-homeassistant-custom-component`). CI also runs hassfest, the HACS check and `mypy` in strict mode (`pip install mypy`), and requires 95% test coverage.
 - `python scripts/live_test.py` signs in to the real Schluter service and prints each thermostat's status without changing anything (`pip install aiohttp`). Add `--watch` to print push notifications as they arrive.
 - Cloud API: login uses `POST /api/authenticate/user`, falling back to the website's OpenID Connect flow, and yields a `SessionId` passed as `?sessionid=`. `GET /api/thermostats` lists thermostats; `POST /api/thermostat?serialnumber=…` changes one. `GET /api/notification?sequencenr=0` is a long-poll that returns when a thermostat changes. A full fetch runs every 15 minutes as a safety net, or every 60 seconds while push is down.
-- Units: the cloud uses hundredths of a degree Celsius (`2000` = 20 °C). On the device protocol, the setpoint field is in two-hundredths; the integration converts between them. `RegulationMode` is `1` schedule, `2` temporary hold, `3` permanent hold, `4` vacation.
+- Units: the cloud uses hundredths of a degree Celsius (`2000` = 20 °C). On the device protocol, setpoints are in two-hundredths; the integration converts between them. `RegulationMode` is `1` schedule, `2` temporary hold, `3` permanent hold, `4` vacation.
 - The device protocol used by local control is documented in [docs/device-protocol.md](docs/device-protocol.md).
 
 ## Status
 
-Version 1.1.0. Cloud mode is tested and in daily use with a DITRA-HEAT-E-WiFi thermostat. Local relay and local only are new in 1.1.0.
+Version 1.1.1. Cloud mode is tested and in daily use with a DITRA-HEAT-E-WiFi thermostat. Local relay and local only are new in 1.1. In 1.1.0, a temperature set from Home Assistant in either local mode landed on the thermostat's stored permanent-hold temperature instead; 1.1.1 fixes that.
 
 Checked against Home Assistant's [integration quality scale](https://developers.home-assistant.io/docs/core/integration-quality-scale/): it follows every Silver rule, every Gold rule except network discovery, and the Platinum rules. Home Assistant only grades integrations built into Home Assistant, so this is a self-assessment.
