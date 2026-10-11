@@ -14,10 +14,10 @@ from homeassistant.components.binary_sensor import (
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import SchluterConfigEntry
 from .coordinator import SchluterCoordinator
+from .entity import SchluterEntity, add_thermostat_entities
 
 PARALLEL_UPDATES = 0
 
@@ -60,17 +60,19 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    async_add_entities(
-        SchluterBinarySensor(coordinator, serial, description)
-        for serial in coordinator.data
-        for description in DESCRIPTIONS
+    add_thermostat_entities(
+        coordinator,
+        async_add_entities,
+        lambda serial: [
+            SchluterBinarySensor(coordinator, serial, description)
+            for description in DESCRIPTIONS
+        ],
     )
 
 
-class SchluterBinarySensor(CoordinatorEntity[SchluterCoordinator], BinarySensorEntity):
+class SchluterBinarySensor(SchluterEntity, BinarySensorEntity):
     """A yes/no fact about one thermostat."""
 
-    _attr_has_entity_name = True
     entity_description: SchluterBinarySensorDescription
 
     def __init__(
@@ -79,15 +81,9 @@ class SchluterBinarySensor(CoordinatorEntity[SchluterCoordinator], BinarySensorE
         serial: str,
         description: SchluterBinarySensorDescription,
     ) -> None:
-        super().__init__(coordinator)
+        super().__init__(coordinator, serial)
         self.entity_description = description
-        self._serial = serial
         self._attr_unique_id = f"{serial}_{description.key}"
-        self._attr_device_info = coordinator.device_info(serial)
-
-    @property
-    def _data(self) -> dict[str, Any]:
-        return self.coordinator.data.get(self._serial, {})
 
     @property
     def available(self) -> bool:

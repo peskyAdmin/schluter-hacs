@@ -26,6 +26,7 @@ from .const import (
     PUSH_RETRY_MIN,
     SAFETY_POLL_INTERVAL,
 )
+from .transport import LocalTransport
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,7 +36,12 @@ class SchluterCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
 
     config_entry: ConfigEntry
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, api: SchluterApi) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        api: SchluterApi | LocalTransport,
+    ) -> None:
         super().__init__(
             hass,
             _LOGGER,
@@ -45,14 +51,24 @@ class SchluterCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         )
         self.api = api
         self.push_connected = False
+        # One set per platform: the serials it has created entities for.
+        self.entity_serials: list[set[str]] = []
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
         try:
             return await self.api.get_thermostats()
         except SchluterAuthError as err:
-            raise ConfigEntryAuthFailed(str(err)) from err
+            raise ConfigEntryAuthFailed(
+                translation_domain=DOMAIN,
+                translation_key="auth_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
         except (SchluterError, aiohttp.ClientError, TimeoutError) as err:
-            raise UpdateFailed(f"Error talking to Schluter: {err}") from err
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="cannot_connect",
+                translation_placeholders={"error": str(err) or type(err).__name__},
+            ) from err
 
     def device_info(self, serial: str) -> DeviceInfo:
         data = self.data.get(serial, {})

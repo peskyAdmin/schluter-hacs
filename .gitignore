@@ -3,3 +3,13 @@
 __pycache__/
 .pytest_cache/
 .venv/
+
+# Network captures may contain device identifiers and traffic. Never commit them.
+*.pcap
+*.pcapng
+*.pcap[0-9]*
+
+# Local-control research: one-off capture scripts, keys and protocol logs (the logs
+# contain account and device data). Kept on the developer's machine; the protocol
+# itself is documented in docs/device-protocol.md.
+research/

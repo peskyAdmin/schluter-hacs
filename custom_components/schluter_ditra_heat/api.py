@@ -34,6 +34,12 @@ _LOGGER = logging.getLogger(__name__)
 
 _SESSION_RE = re.compile(r"var\s+session_object\s*=\s*(\{.*?\});", re.S)
 
+_MODE_TEMP_FIELD = {
+    MODE_COMFORT: "ComfortTemperature",
+    MODE_MANUAL: "ManualTemperature",
+    MODE_VACATION: "VacationTemperature",
+}
+
 
 def requested_temperature(thermostat: dict[str, Any]) -> int | None:
     """Return the target the user asked for, in hundredths of a degree.
@@ -43,11 +49,8 @@ def requested_temperature(thermostat: dict[str, Any]) -> int | None:
     offline. Holds and vacation carry their own requested temperature; only
     the schedule needs the thermostat's own value.
     """
-    field = {
-        MODE_COMFORT: "ComfortTemperature",
-        MODE_MANUAL: "ManualTemperature",
-        MODE_VACATION: "VacationTemperature",
-    }.get(thermostat.get("RegulationMode"))
+    mode = thermostat.get("RegulationMode")
+    field = _MODE_TEMP_FIELD.get(mode) if mode is not None else None
     value = thermostat.get(field) if field else None
     if value in (None, ""):
         value = thermostat.get("SetPointTemp")
@@ -226,7 +229,8 @@ class SchluterApi:
             return await resp.json(content_type=None)
 
     async def get_user_account(self) -> dict[str, Any]:
-        return await self._request("GET", "useraccount")
+        account: dict[str, Any] = await self._request("GET", "useraccount")
+        return account
 
     async def get_thermostats(self) -> dict[str, dict[str, Any]]:
         """Return all thermostats keyed by serial number."""
